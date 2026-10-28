@@ -1,0 +1,9 @@
+\babel@toc {portuguese}{}\relax 
+\contentsline {section}{\numberline {1}Introdução}{1}{section.1}%
+\contentsline {section}{\numberline {2}Arquitetura e componentes}{1}{section.2}%
+\contentsline {section}{\numberline {3}Funcionalidades e APIs}{1}{section.3}%
+\contentsline {section}{\numberline {4}Gargalos de desempenho e pontos únicos de falha}{2}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Potenciais gargalos}{2}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Pontos únicos de falha}{2}{subsection.4.2}%
+\contentsline {section}{\numberline {5}Plano de trabalho}{2}{section.5}%
+\contentsline {section}{\numberline {6}Questões em aberto e dificuldades de instalação}{3}{section.6}%

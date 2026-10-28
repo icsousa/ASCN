@@ -1,0 +1,234 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------- Pacotes ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[portuguese]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,shapes.geometric}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{nosep,leftmargin=*}
+\setlength{\parskip}{3pt}
+\newcommand{\code}[1]{\texttt{#1}}
+% Marca o que ainda falta confirmar (apagar antes de entregar)
+\newcommand{\confirmar}[1]{\textcolor{red}{[CONFIRMAR: #1]}}
+
+% ---------- Dados do grupo ----------
+\newcommand{\grupo}{Grupo 48}
+
+\begin{document}
+\sloppy
+
+% ---------- Capa ----------
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\Large Universidade do Minho\par}
+  {\large Aplicações e Serviços de Computação em Nuvem\par}
+  \vspace{3cm}
+  {\Huge\bfseries Trabalho Prático\par}
+  \vspace{0.5cm}
+  {\LARGE Relatório Inicial --- Checkpoint \#1\par}
+  \vspace{0.5cm}
+  {\large Aplicação Warracker\par}
+  \vfill
+  {\Large \grupo\par}
+  \vspace{0.8cm}
+  \begin{tabular}{ll}
+    Duarte Pinto Bravo - pg63951 \\
+    Ivo Costa Sousa - pg63976 \\
+    João Afonso Almeida Sousa - pg62405 \\
+    Ricardo Eusebio Cerqueira - pg64022 \\
+    Tiago Gonçalves Melo - pg65445 \\
+  \end{tabular}
+  \vspace{2cm}
+
+  {\large Novembro de 2026\par}
+\end{titlepage}
+
+% ---------- Índice (não conta para as 3 páginas) ----------
+\tableofcontents
+\newpage
+\setcounter{page}{1}
+
+% =========================================================
+\section{Introdução}
+O Warracker é uma aplicação web \emph{open-source} para gerir garantias de produtos: guarda as datas de
+compra e de fim de garantia, os comprovativos (faturas, recibos, manuais) e avisa o utilizador quando uma
+garantia está prestes a expirar. Este relatório descreve a arquitetura e as APIs da aplicação, discute os
+seus potenciais gargalos e pontos únicos de falha, e apresenta o plano do grupo para a instalação
+automática no Google Kubernetes Engine (GKE), incluindo as dúvidas e dificuldades encontradas numa
+primeira instalação local com contentores.
+
+% =========================================================
+\section{Arquitetura e componentes}
+A distribuição oficial usa \emph{Docker Compose} com dois serviços (Figura~\ref{fig:arq}):
+
+\begin{itemize}
+  \item \textbf{\code{warracker}} (imagem \code{ghcr.io/sassanix/warracker/main}): um único contentor que
+  agrupa vários processos geridos pelo \emph{supervisord}:
+  \begin{itemize}
+    \item \textbf{Nginx} (porta 80): serve o \emph{frontend} estático (HTML/CSS/JavaScript) e funciona como
+    \emph{reverse proxy}, reencaminhando os pedidos \code{/api/...} para o Gunicorn;
+    \item \textbf{Gunicorn + Flask} (porta 5000, interna): o \emph{backend} em Python, que implementa a
+    lógica de negócio e a API REST, organizado em \emph{blueprints} (autenticação, garantias, \emph{tags},
+    administração, documentos, OIDC). Corre como utilizador não privilegiado (\code{warracker});
+    \item \textbf{cron}: tarefas periódicas que verificam as garantias a expirar e enviam as
+    notificações (email ou Apprise).
+  \end{itemize}
+  O supervisord reinicia automaticamente qualquer um destes processos se terminar
+  (\code{autorestart=true}).
+  No arranque, o contentor aplica as migrações do esquema da base de dados (ficheiros SQL/Python numerados).
+  \item \textbf{\code{warrackerdb}} (imagem \code{postgres:15-alpine}): a base de dados PostgreSQL, com os
+  utilizadores, garantias, \emph{tags} e preferências. Só está acessível na rede interna do Compose
+  (porta 5432 não exposta).
+\end{itemize}
+
+Os dados persistentes ficam em dois volumes: \code{postgres\_data} (dados da BD) e
+\code{warracker\_uploads} (ficheiros enviados pelos utilizadores). A configuração (password da BD,
+\code{SECRET\_KEY}, SMTP, OIDC) é passada por variáveis de ambiente.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw,rounded corners,minimum height=7mm,inner sep=4pt,font=\small},
+  vol/.style={draw,cylinder,shape border rotate=90,aspect=0.25,minimum height=9mm,minimum width=14mm,font=\scriptsize,align=center},
+  >={Stealth}]
+  \node[box] (user) {Browser / cliente HTTP};
+  \node[box,right=12mm of user] (nginx) {Nginx :80};
+  \node[box,right=8mm of nginx] (gun) {Gunicorn + Flask :5000};
+  \node[box,below=5mm of gun] (cron) {cron (notificações)};
+  \node[draw,dashed,rounded corners,inner sep=6pt,fit=(nginx)(gun)(cron),
+        label={[font=\scriptsize]above:contentor \code{warracker} (supervisord)}] (c1) {};
+  \node[box,right=12mm of gun] (db) {PostgreSQL 15};
+  \node[vol,below=6mm of db] (vdb) {\code{postgres}\\\code{\_data}};
+  \node[vol,below=6mm of nginx] (vup) {\code{warracker}\\\code{\_uploads}};
+  \draw[->] (user) -- node[above,font=\scriptsize]{:8005} (nginx);
+  \draw[->] (nginx) -- node[above,font=\scriptsize]{/api} (gun);
+  \draw[->] (gun) -- (db);
+  \draw[->] (cron.east) -| (db.south west);
+  \draw (db) -- (vdb);
+  \draw (gun.south west) -- (vup);
+\end{tikzpicture}
+\caption{Arquitetura da instalação base do Warracker (Docker Compose).}
+\label{fig:arq}
+\end{figure}
+
+% =========================================================
+\section{Funcionalidades e APIs}
+\textbf{Funcionalidades.} Registo de garantias (produto, datas, preço, números de série, notas e
+garantias vitalícias); envio de comprovativos; \emph{tags}, pesquisa e filtros; registo de reclamações
+(\emph{claims}); painel de estado com estatísticas; importação e exportação em CSV; notificações de
+expiração; vários utilizadores, em que o primeiro registado fica administrador; e autenticação local
+ou por OIDC/SSO; integração opcional com o Paperless-ngx para guardar documentos.
+
+\textbf{API.} O \emph{frontend} comunica com o \emph{backend} apenas por uma API REST com JSON, sob
+\code{/api/}, com cerca de 80 rotas distribuídas por 7 \emph{blueprints} Flask (Tabela~\ref{tab:api}).
+A autenticação usa JWT: o \emph{login} (ou registo) devolve um \emph{token} assinado com a
+\code{SECRET\_KEY} (HS256), que o cliente envia nos pedidos seguintes no cabeçalho
+\code{Authorization: Bearer <token>}.
+
+\begin{table}[h]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Grupo (\emph{blueprint}) & Endpoints representativos e função \\
+\midrule
+Saúde & \code{GET /api/health}: estado do serviço (usado pelo \emph{healthcheck}) \\
+Autenticação & \code{POST /api/auth/register}, \code{/login}, \code{/logout}; perfil, preferências,
+  alteração e recuperação de password \\
+OIDC & \code{/api/oidc/login}, \code{/api/oidc/callback}: \emph{login} por SSO \\
+Garantias & \code{GET|POST /api/warranties}, \code{PUT|DELETE /api/warranties/<id>}; arquivo,
+  \emph{claims} e importação CSV (\code{/warranties/import}) \\
+\emph{Tags} & \code{GET|POST /api/tags}; associação de \emph{tags} a garantias \\
+Estatísticas & \code{GET /api/statistics}, \code{/statistics/global}: painel de estado \\
+Ficheiros & \code{/api/secure-file/<nome>}: comprovativos; rotas \code{/api/paperless/...} \\
+Administração & \code{/api/admin/users}, \code{/settings}, \code{/audit-trail}, notificações Apprise \\
+\bottomrule
+\end{tabularx}
+\caption{Organização da API REST do Warracker.}
+\label{tab:api}
+\end{table}
+
+% =========================================================
+\section{Gargalos de desempenho e pontos únicos de falha}
+\subsection{Potenciais gargalos}
+\begin{itemize}
+  \item \textbf{Workers do Gunicorn:} no modo por omissão (\emph{optimized}) há apenas 2 \emph{workers}
+  \emph{gevent} (confirmado nos \emph{logs}; 4 no modo \emph{performance}, 1 no modo mais leve),
+  escolhidos para poupar memória. Os \emph{workers} gevent tratam vários pedidos em simultâneo
+  enquanto esperam por I/O, mas o processamento em CPU de cada \emph{worker} é sequencial; com muitos
+  clientes, a latência sobe.
+  \item \textbf{Pool de ligações à BD:} cada \emph{worker} usa um \code{SimpleConnectionPool} do
+  \code{psycopg2} com 1 a 4 ligações (reduzido de 10 para poupar memória). Com 2 \emph{workers}, há no
+  máximo 8 consultas simultâneas à BD, enquanto cada \emph{worker} gevent aceita muitos pedidos ao mesmo
+  tempo. Os pedidos em excesso ficam bloqueados à espera de uma ligação (ou falham), por isso este é,
+  provavelmente, o primeiro limite a ser atingido.
+  \item \textbf{Base de dados:} é única e partilhada por todos os pedidos; listagens, pesquisas e
+  estatísticas sobre muitas garantias podem saturar o CPU e o I/O.
+  \item \textbf{Uploads e downloads de ficheiros:} passam pelo Flask e pelo disco do volume, consumindo
+  \emph{workers} e I/O durante mais tempo do que um pedido JSON.
+\end{itemize}
+
+\subsection{Pontos únicos de falha}
+\begin{itemize}
+  \item \textbf{Instância única do PostgreSQL:} se falhar, toda a aplicação deixa de funcionar.
+  \item \textbf{Instância única da aplicação:} Nginx, Flask e agendador estão no mesmo contentor; uma
+  falha nesse contentor (ou no nó onde corre) torna a aplicação inacessível.
+  \item \textbf{Volumes:} os dados da BD e os \emph{uploads} estão num único disco; sem cópias de
+  segurança, a perda do disco é a perda dos dados.
+  \item \textbf{\code{SECRET\_KEY}:} se não for fixa, é gerada ao acaso a cada arranque e todos os
+  \emph{tokens} deixam de ser válidos; com várias réplicas, todas têm de partilhar a mesma chave.
+\end{itemize}
+
+% =========================================================
+\section{Plano de trabalho}
+\textbf{Tarefa 1.} Cada componente num \emph{pod} distinto: um \emph{Deployment} para o
+\code{warracker} e o PostgreSQL com um \emph{PersistentVolumeClaim} (PVC). Os \emph{uploads} também
+ficam num PVC. As passwords e a \code{SECRET\_KEY} ficam em \emph{Secrets} e a restante configuração num
+\emph{ConfigMap}. A aplicação é exposta ao exterior por um \emph{Service} do tipo \emph{LoadBalancer}.
+Os playbooks Ansible (com a estrutura base da equipa docente) vão criar o cluster GKE, fazer o
+\emph{deploy} e permitir parar e retomar a aplicação sem apagar os PVC.
+
+\textbf{Tarefa 2.} Focar a otimização no servidor aplicacional (\code{warracker}): é o componente que
+trata todos os pedidos e é \emph{stateless} quanto ao estado de sessão (JWT), por isso é o candidato
+natural à replicação horizontal (\emph{replicas} e \emph{HorizontalPodAutoscaler}). Também vamos
+comparar os modos de \emph{workers} do Gunicorn (escalabilidade vertical dentro de cada \emph{pod}). A avaliação vai
+usar testes de carga que simulam utilizadores típicos (login, listar, criar e pesquisar garantias)
+com diferentes números de clientes, e as métricas de CPU, RAM e latência do Google Cloud Monitoring.
+
+% =========================================================
+\section{Questões em aberto e dificuldades de instalação}
+\textbf{Instalação local.} O grupo instalou a aplicação numa VM Ubuntu 24.04 (Vagrant) com o
+\code{docker-compose.yml} oficial. O Docker foi instalado com o playbook Ansible do Guião 2; a única
+dificuldade foi a autenticação SSH entre a VM de controlo e o nó, resolvida autorizando a chave pública
+da VM de controlo no nó (\code{ssh-copy-id}). Com a \code{SECRET\_KEY} e a password da BD definidas num
+\code{.env}, os dois contentores ficaram \emph{healthy} em cerca de 30\,s. O \emph{healthcheck} e o
+\code{depends\_on} garantem que a aplicação só arranca depois da BD. A API respondeu corretamente
+(\code{/api/health}, registo com JWT, conta administradora) e os dados mantiveram-se depois de
+\code{docker compose down} e \code{up}, graças aos volumes. A imagem não inclui ferramentas como
+\code{ps}, o que dificulta a inspeção dos processos dentro do contentor.
+
+\textbf{Questões em aberto para o Kubernetes:}
+\begin{itemize}
+  \item \textbf{Ordem de arranque:} o Kubernetes não tem \code{depends\_on}; será preciso um
+  \emph{initContainer} ou \emph{readiness probes} para a aplicação esperar pela BD.
+  \item \textbf{Volume de \emph{uploads} com várias réplicas:} um PVC \emph{ReadWriteOnce} só pode ser
+  montado num nó; replicar o \code{warracker} exige um volume partilhado (\emph{ReadWriteMany},
+  p.\,ex.\ Filestore) ou outra estratégia de armazenamento.
+  \item \textbf{Réplicas e processos internos:} cada réplica aplicaria as migrações no arranque e
+  correria o agendador, com risco de concorrência nas migrações e notificações duplicadas.
+  \item \textbf{Imagem com a \emph{tag} \code{latest}:} convém fixar uma versão para a instalação ser
+  reprodutível.
+  \item \textbf{Playbooks base:} a estrutura obrigatória ainda não foi publicada; o plano pode ter de
+  ser ajustado quando o for.
+\end{itemize}
+
+\end{document}

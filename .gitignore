@@ -1,0 +1,9 @@
+*.box
+.vagrant/
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+*.toc
